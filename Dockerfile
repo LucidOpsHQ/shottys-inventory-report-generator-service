@@ -22,15 +22,17 @@ WORKDIR /app
 # Copy published app
 COPY --from=publish /app/publish .
 
-# Create directories for volumes
-RUN mkdir -p /app/Template
+# Copy Template folder into the image
+COPY InventoryReportService/Template /app/Template
 
-# Expose port
+# Copy appsettings.json (base configuration, sensitive data via env vars)
+COPY InventoryReportService/appsettings.json /app/appsettings.json
+
+# Expose port (Railway will override with its own PORT variable)
 EXPOSE 8080
-EXPOSE 8081
 
 # Set environment variables
-ENV ASPNETCORE_URLS=http://+:8080
+# Note: ASPNETCORE_URLS will be set via Railway environment variable
 ENV ASPNETCORE_ENVIRONMENT=Production
 
 # Run the application

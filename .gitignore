@@ -84,11 +84,18 @@ artifacts/
 
 # Local configuration files
 appsettings.Local.json
-appsettings.json
+appsettings.Development.json
 
-# Excel template and report files (optional - comment out if you want to track them)
+# Exclude local appsettings but allow Production version for Railway
+InventoryReportService/appsettings.json
+!InventoryReportService/appsettings.Production.json
+
+# Excel report files (exclude generated reports but keep templates)
+# Allow template files in Template folder for Railway deployment
 *.xlsx
 *.xls
+!InventoryReportService/Template/**/*.xlsx
+!InventoryReportService/Template/**/*.xls
 
 # OS files
 .DS_Store
