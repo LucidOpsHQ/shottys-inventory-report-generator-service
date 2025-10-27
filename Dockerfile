@@ -25,10 +25,6 @@ COPY --from=publish /app/publish .
 # Create directories for volumes
 RUN mkdir -p /app/Template
 
-# Declare volumes for configuration and template files
-VOLUME ["/app/appsettings.json"]
-VOLUME ["/app/Template"]
-
 # Expose port
 EXPOSE 8080
 EXPOSE 8081
