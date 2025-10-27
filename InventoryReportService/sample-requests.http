@@ -1,0 +1,25 @@
+### Health Check
+GET https://localhost:5001/api/report/health
+Accept: application/json
+
+### Generate Report with Default Query (GET)
+GET https://localhost:5001/api/report/generate
+
+### Generate Report with Custom Query (GET)
+GET https://localhost:5001/api/report/generate?query=SELECT * FROM inventory WHERE active = true
+
+### Generate Report with Custom Query (POST)
+POST https://localhost:5001/api/report/generate
+Content-Type: application/json
+
+{
+  "query": "SELECT id, name, quantity, price FROM inventory WHERE quantity > 0 ORDER BY name"
+}
+
+### Generate Report with Date Filter (POST)
+POST https://localhost:5001/api/report/generate
+Content-Type: application/json
+
+{
+  "query": "SELECT * FROM inventory WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'"
+}
