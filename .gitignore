@@ -86,9 +86,6 @@ artifacts/
 appsettings.Local.json
 appsettings.Development.json
 
-# Exclude local appsettings but allow Production version for Railway
-InventoryReportService/appsettings.json
-!InventoryReportService/appsettings.Production.json
 
 # Excel report files (exclude generated reports but keep templates)
 # Allow template files in Template folder for Railway deployment
