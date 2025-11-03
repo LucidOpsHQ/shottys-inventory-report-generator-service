@@ -14,9 +14,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<ExcelSettings>(
     builder.Configuration.GetSection("ExcelSettings"));
 
+// Configure SupabaseSettings from appsettings.json
+builder.Services.Configure<SupabaseSettings>(
+    builder.Configuration.GetSection("SupabaseSettings"));
+
 // Register application services
 builder.Services.AddScoped<IPostgreSqlService, PostgreSqlService>();
 builder.Services.AddScoped<IExcelService, ExcelService>();
+builder.Services.AddScoped<ISupabaseStorageService, SupabaseStorageService>();
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

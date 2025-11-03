@@ -11,17 +11,20 @@ public class ReportController : ControllerBase
 {
     private readonly IPostgreSqlService _postgreSqlService;
     private readonly IExcelService _excelService;
+    private readonly ISupabaseStorageService _supabaseStorageService;
     private readonly ExcelSettings _excelSettings;
     private readonly ILogger<ReportController> _logger;
 
     public ReportController(
         IPostgreSqlService postgreSqlService,
         IExcelService excelService,
+        ISupabaseStorageService supabaseStorageService,
         IOptions<ExcelSettings> excelSettings,
         ILogger<ReportController> logger)
     {
         _postgreSqlService = postgreSqlService;
         _excelService = excelService;
+        _supabaseStorageService = supabaseStorageService;
         _excelSettings = excelSettings.Value;
         _logger = logger;
     }
@@ -30,9 +33,9 @@ public class ReportController : ControllerBase
     /// Generates an inventory report by fetching data from PostgreSQL and updating an Excel template
     /// </summary>
     /// <param name="query">SQL query to fetch data from PostgreSQL. If not provided, uses a default query.</param>
-    /// <returns>Excel file with updated data</returns>
+    /// <returns>Redirect to the uploaded file in Supabase storage</returns>
     [HttpGet("generate")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status302Found)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<IActionResult> GenerateReport([FromQuery] string? query = null)
@@ -72,14 +75,19 @@ public class ReportController : ControllerBase
                 _excelSettings.SheetNameToReplace,
                 data);
 
-            // Return the Excel file
+            // Generate unique file name
             var fileName = $"InventoryReport_{DateTime.UtcNow:yyyyMMdd_HHmmss}.xlsx";
 
-            _logger.LogInformation("Report generated successfully: {FileName}", fileName);
+            // Upload to Supabase storage
+            var publicUrl = await _supabaseStorageService.UploadFileAsync(
+                excelBytes,
+                fileName,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 
-            return File(excelBytes,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                fileName);
+            _logger.LogInformation("Report generated and uploaded successfully: {FileName}, URL: {Url}", fileName, publicUrl);
+
+            // Return Found (302) redirect to the public URL
+            return Redirect(publicUrl);
         }
         catch (Exception ex)
         {
@@ -92,9 +100,9 @@ public class ReportController : ControllerBase
     /// Generates an inventory report using a POST request with query in the body
     /// </summary>
     /// <param name="request">Request containing the SQL query</param>
-    /// <returns>Excel file with updated data</returns>
+    /// <returns>Redirect to the uploaded file in Supabase storage</returns>
     [HttpPost("generate")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status302Found)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
     public async Task<IActionResult> GenerateReportPost([FromBody] ReportRequest request)
