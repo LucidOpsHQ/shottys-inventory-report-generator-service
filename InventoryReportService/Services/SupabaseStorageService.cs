@@ -45,13 +45,13 @@ public class SupabaseStorageService : ISupabaseStorageService
 
             // Upload the file
             using var stream = new MemoryStream(fileBytes);
-            var fileOptions = new FileOptions
+            var fileOptions = new Supabase.Storage.FileOptions
             {
                 ContentType = contentType,
                 Upsert = false // Don't overwrite existing files
             };
 
-            await storage.Upload(fileName, stream, fileOptions);
+            await storage.Upload(fileBytes, fileName, fileOptions);
 
             // Get the public URL using Supabase's built-in method
             var publicUrl = storage.GetPublicUrl(fileName);
