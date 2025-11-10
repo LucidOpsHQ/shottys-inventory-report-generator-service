@@ -58,6 +58,7 @@ public class ReportController : ControllerBase
                     actual_unit_cost as ""Actual Unit Cost"",
                     actual_value as ""Actual Value""
                 FROM inventory_cost
+                WHERE area != 'MARKETING'
                 ORDER BY date";
 
             // Fetch data from PostgreSQL
@@ -94,25 +95,6 @@ public class ReportController : ControllerBase
             _logger.LogError(ex, "Error generating report");
             return StatusCode(500, $"Error generating report: {ex.Message}");
         }
-    }
-
-    /// <summary>
-    /// Generates an inventory report using a POST request with query in the body
-    /// </summary>
-    /// <param name="request">Request containing the SQL query</param>
-    /// <returns>Redirect to the uploaded file in Supabase storage</returns>
-    [HttpPost("generate")]
-    [ProducesResponseType(StatusCodes.Status302Found)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-    public async Task<IActionResult> GenerateReportPost([FromBody] ReportRequest request)
-    {
-        if (request == null || string.IsNullOrWhiteSpace(request.Query))
-        {
-            return BadRequest("Query is required");
-        }
-
-        return await GenerateReport(request.Query);
     }
 
     /// <summary>
