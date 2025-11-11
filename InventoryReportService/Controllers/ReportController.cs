@@ -55,8 +55,8 @@ public class ReportController : ControllerBase
                     type as ""Type"",
                     qty as ""Qty"",
                     unit as ""Unit"",
-                    actual_unit_cost as ""Actual Unit Cost"",
-                    actual_value as ""Actual Value""
+                    standard_unit_cost as ""Actual Unit Cost"",
+                    standard_value as ""Actual Value""
                 FROM inventory_cost
                 WHERE area != 'MARKETING'
                 ORDER BY date";
