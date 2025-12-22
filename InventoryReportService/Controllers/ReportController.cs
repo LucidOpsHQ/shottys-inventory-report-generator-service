@@ -96,11 +96,11 @@ public class ReportController : ControllerBase
                             row["Standard Value"] = averagePrice;
 
                             // Recalculate standard_unit_cost = average_price / qty
-                            // qty is always decimal (can be negative, 0, or null)
+                            // qty is always numeric (can be negative, 0, or null) - PostgreSQL may return as Single/Float
                             var qtyValue = row["Qty"];
                             if (qtyValue != null && qtyValue != DBNull.Value)
                             {
-                                var qty = (decimal)qtyValue;
+                                var qty = Convert.ToDecimal(qtyValue);
                                 if (qty != 0)
                                 {
                                     var newStandardUnitCost = averagePrice / qty;
