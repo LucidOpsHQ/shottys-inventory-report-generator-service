@@ -77,6 +77,12 @@ public class ReportController : ControllerBase
             // Modify data in-memory: replace standard_value with average_price and recalculate standard_unit_cost
             if (goodsPrices.Count > 0 && data.Columns.Contains("Item") && data.Columns.Contains("Standard Value") && data.Columns.Contains("Standard Unit Cost") && data.Columns.Contains("Qty"))
             {
+                // Make columns writable (they may be read-only when loaded from database)
+                var standardValueColumn = data.Columns["Standard Value"];
+                var standardUnitCostColumn = data.Columns["Standard Unit Cost"];
+                if (standardValueColumn != null) standardValueColumn.ReadOnly = false;
+                if (standardUnitCostColumn != null) standardUnitCostColumn.ReadOnly = false;
+
                 int updatedCount = 0;
                 foreach (DataRow row in data.Rows)
                 {
