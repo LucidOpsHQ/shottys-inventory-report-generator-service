@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using InventoryReportService.Models;
@@ -68,6 +69,47 @@ public class ReportController : ControllerBase
             {
                 _logger.LogWarning("No data returned from database query");
                 return BadRequest("No data found for the specified query");
+            }
+
+            // Fetch goods average prices
+            var goodsPrices = await _postgreSqlService.GetGoodsAveragePricesAsync();
+
+            // Modify data in-memory: replace standard_value with average_price and recalculate standard_unit_cost
+            if (goodsPrices.Count > 0 && data.Columns.Contains("Item") && data.Columns.Contains("Standard Value") && data.Columns.Contains("Standard Unit Cost") && data.Columns.Contains("Qty"))
+            {
+                int updatedCount = 0;
+                foreach (DataRow row in data.Rows)
+                {
+                    var skuValue = row["Item"];
+                    if (skuValue != null && skuValue != DBNull.Value)
+                    {
+                        var sku = skuValue.ToString();
+                        if (!string.IsNullOrWhiteSpace(sku) && goodsPrices.TryGetValue(sku, out var averagePrice))
+                        {
+                            // Replace standard_value with average_price
+                            row["Standard Value"] = averagePrice;
+
+                            // Recalculate standard_unit_cost = average_price / qty
+                            // qty is always decimal (can be negative, 0, or null)
+                            var qtyValue = row["Qty"];
+                            if (qtyValue != null && qtyValue != DBNull.Value)
+                            {
+                                var qty = (decimal)qtyValue;
+                                if (qty != 0)
+                                {
+                                    var newStandardUnitCost = averagePrice / qty;
+                                    row["Standard Unit Cost"] = newStandardUnitCost;
+                                    updatedCount++;
+                                }
+                            }
+                        }
+                    }
+                }
+                _logger.LogInformation("Updated {Count} rows with goods average prices", updatedCount);
+            }
+            else
+            {
+                _logger.LogWarning("Skipping goods price update: missing required columns or no goods data available");
             }
 
             // Replace sheet data in Excel template

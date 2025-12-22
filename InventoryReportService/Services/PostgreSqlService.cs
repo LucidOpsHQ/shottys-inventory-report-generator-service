@@ -41,4 +41,37 @@ public class PostgreSqlService : IPostgreSqlService
             throw;
         }
     }
+
+    public async Task<Dictionary<string, decimal>> GetGoodsAveragePricesAsync()
+    {
+        try
+        {
+            _logger.LogInformation("Fetching goods average prices");
+
+            var goodsPrices = new Dictionary<string, decimal>();
+
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            const string query = "SELECT sku, average_price FROM goods";
+            await using var command = new NpgsqlCommand(query, connection);
+            await using var reader = await command.ExecuteReaderAsync();
+
+            while (await reader.ReadAsync())
+            {
+                var sku = reader.GetString(0);
+                var averagePrice = reader.GetDecimal(1);
+                goodsPrices[sku] = averagePrice;
+            }
+
+            _logger.LogInformation("Successfully fetched {Count} goods with average prices", goodsPrices.Count);
+
+            return goodsPrices;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching goods average prices from PostgreSQL");
+            throw;
+        }
+    }
 }
