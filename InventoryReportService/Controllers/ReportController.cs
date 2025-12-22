@@ -93,7 +93,7 @@ public class ReportController : ControllerBase
                         if (!string.IsNullOrWhiteSpace(sku) && goodsPrices.TryGetValue(sku, out var averagePrice))
                         {
                             // Replace standard_value with average_price
-                            row["Standard Value"] = averagePrice;
+                            row["Standard Unit Cost"] = averagePrice;
 
                             // Recalculate standard_unit_cost = average_price / qty
                             // qty is always numeric (can be negative, 0, or null) - PostgreSQL may return as Single/Float
@@ -103,8 +103,8 @@ public class ReportController : ControllerBase
                                 var qty = Convert.ToDecimal(qtyValue);
                                 if (qty != 0)
                                 {
-                                    var newStandardUnitCost = averagePrice / qty;
-                                    row["Standard Unit Cost"] = newStandardUnitCost;
+                                    var newStandardValue = averagePrice * qty;
+                                    row["Standard Value"] = newStandardValue;
                                     updatedCount++;
                                 }
                             }
