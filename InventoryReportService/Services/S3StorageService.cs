@@ -80,6 +80,41 @@ public class S3StorageService : IS3StorageService
             _logger.LogInformation("File uploaded successfully: {FileName}, RequestId={RequestId}",
                 fileName, response.ResponseMetadata.RequestId);
 
+            // Wait for eventual consistency - verify file exists before generating pre-signed URL
+            // Railway's S3-compatible storage may have a small delay before file is available
+            var maxRetries = 5;
+            var retryDelay = TimeSpan.FromMilliseconds(500);
+
+            for (int i = 0; i < maxRetries; i++)
+            {
+                try
+                {
+                    var headRequest = new GetObjectMetadataRequest
+                    {
+                        BucketName = _settings.BucketName,
+                        Key = fileName
+                    };
+
+                    await client.GetObjectMetadataAsync(headRequest);
+                    _logger.LogInformation("File verified as available: {FileName} (attempt {Attempt})", fileName, i + 1);
+                    break;
+                }
+                catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchKey" || ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    if (i < maxRetries - 1)
+                    {
+                        _logger.LogDebug("File not yet available, retrying in {Delay}ms: {FileName} (attempt {Attempt})",
+                            retryDelay.TotalMilliseconds, fileName, i + 1);
+                        await Task.Delay(retryDelay);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("File not available after {MaxRetries} attempts: {FileName}. Proceeding anyway - it should be available shortly.",
+                            maxRetries, fileName);
+                    }
+                }
+            }
+
             // Generate pre-signed URL (expires in 1 hour)
             var presignedRequest = new GetPreSignedUrlRequest
             {
