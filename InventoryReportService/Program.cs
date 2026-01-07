@@ -22,9 +22,6 @@ builder.Services.Configure<SupabaseSettings>(
 builder.Services.Configure<S3Settings>(
     builder.Configuration.GetSection("S3Settings"));
 
-// Register HttpClient for S3StorageService
-builder.Services.AddHttpClient();
-
 // Register application services
 builder.Services.AddScoped<IPostgreSqlService, PostgreSqlService>();
 builder.Services.AddScoped<IExcelService, ExcelService>();
