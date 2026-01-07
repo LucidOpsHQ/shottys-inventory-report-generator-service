@@ -101,8 +101,9 @@ public class S3StorageService : IS3StorageService
         var host = uri.Host;
 
         // Set required headers
-        request.Headers.Add("Host", host);
-        request.Headers.Add("x-amz-date", timeStamp);
+        // Note: Host header is set automatically by HttpClient, but we include it in signature
+        // For x-amz-date, use TryAddWithoutValidation to avoid validation
+        request.Headers.TryAddWithoutValidation("x-amz-date", timeStamp);
         if (contentType != null)
         {
             request.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
@@ -134,8 +135,20 @@ public class S3StorageService : IS3StorageService
         var signature = BitConverter.ToString(HmacSha256(kSigning, stringToSign)).Replace("-", "").ToLowerInvariant();
 
         // Create authorization header
+        // Note: For custom authorization schemes, we need to add it as a raw header
         var authHeader = $"{algorithm} Credential={_settings.AccessKeyId}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
-        request.Headers.Add("Authorization", authHeader);
+
+        // Remove any existing Authorization header and add our custom one
+        if (request.Headers.Contains("Authorization"))
+        {
+            request.Headers.Remove("Authorization");
+        }
+
+        // Add Authorization header - use TryAddWithoutValidation to avoid format checking
+        if (!request.Headers.TryAddWithoutValidation("Authorization", authHeader))
+        {
+            throw new InvalidOperationException("Failed to add Authorization header");
+        }
     }
 
     private string GeneratePresignedUrl(string key, TimeSpan expiration)
