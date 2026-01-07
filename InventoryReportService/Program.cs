@@ -18,10 +18,15 @@ builder.Services.Configure<ExcelSettings>(
 builder.Services.Configure<SupabaseSettings>(
     builder.Configuration.GetSection("SupabaseSettings"));
 
+// Configure S3Settings from appsettings.json
+builder.Services.Configure<S3Settings>(
+    builder.Configuration.GetSection("S3Settings"));
+
 // Register application services
 builder.Services.AddScoped<IPostgreSqlService, PostgreSqlService>();
 builder.Services.AddScoped<IExcelService, ExcelService>();
 builder.Services.AddScoped<ISupabaseStorageService, SupabaseStorageService>();
+builder.Services.AddScoped<IS3StorageService, S3StorageService>();
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

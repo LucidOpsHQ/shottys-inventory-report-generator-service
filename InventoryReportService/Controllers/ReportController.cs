@@ -12,20 +12,20 @@ public class ReportController : ControllerBase
 {
     private readonly IPostgreSqlService _postgreSqlService;
     private readonly IExcelService _excelService;
-    private readonly ISupabaseStorageService _supabaseStorageService;
+    private readonly IS3StorageService _s3StorageService;
     private readonly ExcelSettings _excelSettings;
     private readonly ILogger<ReportController> _logger;
 
     public ReportController(
         IPostgreSqlService postgreSqlService,
         IExcelService excelService,
-        ISupabaseStorageService supabaseStorageService,
+        IS3StorageService s3StorageService,
         IOptions<ExcelSettings> excelSettings,
         ILogger<ReportController> logger)
     {
         _postgreSqlService = postgreSqlService;
         _excelService = excelService;
-        _supabaseStorageService = supabaseStorageService;
+        _s3StorageService = s3StorageService;
         _excelSettings = excelSettings.Value;
         _logger = logger;
     }
@@ -34,7 +34,7 @@ public class ReportController : ControllerBase
     /// Generates an inventory report by fetching data from PostgreSQL and updating an Excel template
     /// </summary>
     /// <param name="query">SQL query to fetch data from PostgreSQL. If not provided, uses a default query.</param>
-    /// <returns>Redirect to the uploaded file in Supabase storage</returns>
+    /// <returns>Redirect to the uploaded file in S3 storage</returns>
     [HttpGet("generate")]
     [ProducesResponseType(StatusCodes.Status302Found)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -127,8 +127,8 @@ public class ReportController : ControllerBase
             // Generate unique file name
             var fileName = $"InventoryReport_{DateTime.UtcNow:yyyyMMdd_HHmmss}.xlsx";
 
-            // Upload to Supabase storage
-            var publicUrl = await _supabaseStorageService.UploadFileAsync(
+            // Upload to S3 storage
+            var publicUrl = await _s3StorageService.UploadFileAsync(
                 excelBytes,
                 fileName,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
