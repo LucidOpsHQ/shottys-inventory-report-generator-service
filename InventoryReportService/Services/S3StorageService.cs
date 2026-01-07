@@ -101,23 +101,38 @@ public class S3StorageService : IS3StorageService
         var host = uri.Host;
 
         // Set required headers
-        // Note: Host header is set automatically by HttpClient, but we include it in signature
-        // For x-amz-date, use TryAddWithoutValidation to avoid validation
+        // Host header must be explicitly set for signature calculation
+        request.Headers.TryAddWithoutValidation("Host", host);
         request.Headers.TryAddWithoutValidation("x-amz-date", timeStamp);
+
+        // Build canonical headers - must include all headers that are being signed
+        var canonicalHeaders = new List<string> { $"host:{host}", $"x-amz-date:{timeStamp}" };
+        var signedHeadersList = new List<string> { "host", "x-amz-date" };
+
+        // Add Content-Type if present
         if (contentType != null)
         {
             request.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+            canonicalHeaders.Add($"content-type:{contentType.ToLowerInvariant()}");
+            signedHeadersList.Add("content-type");
         }
 
-        // Create canonical request
-        var canonicalHeaders = $"host:{host}\nx-amz-date:{timeStamp}\n";
-        var signedHeaders = "host;x-amz-date";
+        // Sort headers alphabetically (required by AWS Signature V4)
+        canonicalHeaders.Sort();
+        var canonicalHeadersString = string.Join("\n", canonicalHeaders) + "\n";
+        // Signed headers must also be sorted alphabetically
+        signedHeadersList.Sort();
+        var signedHeaders = string.Join(";", signedHeadersList);
+
         var payloadHash = body != null ? ComputeSha256Hash(body) : ComputeSha256Hash(Array.Empty<byte>());
 
+        // Build canonical request
+        // The path should match the URL path (already escaped in URL construction)
+        var path = $"/{Uri.EscapeDataString(key)}";
         var canonicalRequest = $"{method}\n" +
-                              $"/{Uri.EscapeDataString(key)}\n" +
+                              $"{path}\n" +
                               $"\n" + // Query string (empty for PUT)
-                              $"{canonicalHeaders}\n" +
+                              $"{canonicalHeadersString}" +
                               $"{signedHeaders}\n" +
                               $"{payloadHash}";
 
