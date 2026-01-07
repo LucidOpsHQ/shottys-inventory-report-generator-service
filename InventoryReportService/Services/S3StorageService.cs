@@ -31,25 +31,23 @@ public class S3StorageService : IS3StorageService
                 throw new InvalidOperationException("S3 BucketName is not configured");
 
             // Create S3 config for Railway's S3-compatible storage
+            // Railway Buckets use virtual-hosted-style URLs by default:
+            // https://bucket-name.storage.railway.app/key
+            // When using a custom endpoint (ServiceURL), we should NOT set RegionEndpoint
+            // as it causes the SDK to try authenticating against AWS instead of the custom endpoint
             var s3Config = new AmazonS3Config
             {
-                ServiceURL = _settings.EndpointUrl,
-                ForcePathStyle = true, // Required for Railway/S3-compatible storage
-                RegionEndpoint = RegionEndpoint.USEast1 // Default, Railway uses "auto" but SDK needs a valid region
+                ServiceURL = _settings.EndpointUrl.TrimEnd('/'), // Remove trailing slash if present
+                // ForcePathStyle defaults to false, which means virtual-hosted-style URLs
+                // This is the standard for Railway Buckets (newer buckets)
+                // Older buckets might require path-style - check your bucket's Credentials tab
+                // Don't set RegionEndpoint for custom S3-compatible endpoints
+                // This prevents the SDK from trying to authenticate against AWS
             };
 
-            // Parse region if it's not "auto"
-            if (!string.IsNullOrWhiteSpace(_settings.Region) && _settings.Region != "auto")
-            {
-                try
-                {
-                    s3Config.RegionEndpoint = RegionEndpoint.GetBySystemName(_settings.Region);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Invalid region '{Region}', using default", _settings.Region);
-                }
-            }
+            _logger.LogInformation("S3 Client configured: Endpoint={Endpoint}, Bucket={Bucket}, VirtualHostedStyle={VirtualHostedStyle}, AccessKeyId={AccessKeyId}",
+                s3Config.ServiceURL, _settings.BucketName, !s3Config.ForcePathStyle,
+                string.IsNullOrEmpty(_settings.AccessKeyId) ? "NOT SET" : $"{_settings.AccessKeyId.Substring(0, Math.Min(8, _settings.AccessKeyId.Length))}...");
 
             // Create S3 client with credentials
             var credentials = new Amazon.Runtime.BasicAWSCredentials(
@@ -102,10 +100,16 @@ public class S3StorageService : IS3StorageService
                 fileName, _settings.EndpointUrl, _settings.BucketName);
 
             // Provide more context in the error message
-            if (ex.Message.Contains("InvalidAccessKeyId") || ex.Message.Contains("SignatureDoesNotMatch"))
+            if (ex.Message.Contains("InvalidAccessKeyId") ||
+                ex.Message.Contains("SignatureDoesNotMatch") ||
+                ex.Message.Contains("does not exist in our records"))
             {
                 throw new InvalidOperationException(
-                    $"Failed to upload to S3. Invalid credentials. Check your AccessKeyId and SecretAccessKey.", ex);
+                    $"Failed to upload to S3. Invalid credentials or endpoint configuration issue. " +
+                    $"This error usually means: 1) AccessKeyId/SecretAccessKey are incorrect, " +
+                    $"2) The SDK is trying to authenticate against AWS instead of Railway endpoint '{_settings.EndpointUrl}', " +
+                    $"3) Check that your endpoint URL is correct and doesn't include the bucket name. " +
+                    $"Current endpoint: {_settings.EndpointUrl}", ex);
             }
 
             if (ex.Message.Contains("NoSuchBucket"))
