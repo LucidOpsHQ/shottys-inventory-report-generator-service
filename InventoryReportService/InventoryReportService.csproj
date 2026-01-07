@@ -7,7 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="AWSSDK.S3" Version="3.7.400.30" />
     <PackageReference Include="EPPlus" Version="8.2.1" />
     <PackageReference Include="Npgsql" Version="9.0.4" />
     <PackageReference Include="Supabase" Version="1.1.1" />

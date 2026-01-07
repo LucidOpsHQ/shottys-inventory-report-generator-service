@@ -1,9 +1,6 @@
-using Amazon;
-using Amazon.S3;
-using Amazon.S3.Model;
-using Amazon.Runtime;
-using Amazon.Runtime.Internal;
-using Amazon.Runtime.Internal.Transform;
+using System.Security.Cryptography;
+using System.Text;
+using System.Web;
 using InventoryReportService.Models;
 using Microsoft.Extensions.Options;
 
@@ -13,52 +10,31 @@ public class S3StorageService : IS3StorageService
 {
     private readonly S3Settings _settings;
     private readonly ILogger<S3StorageService> _logger;
-    private readonly Lazy<IAmazonS3> _s3Client;
+    private readonly HttpClient _httpClient;
 
     public S3StorageService(
         IOptions<S3Settings> settings,
-        ILogger<S3StorageService> logger)
+        ILogger<S3StorageService> logger,
+        IHttpClientFactory httpClientFactory)
     {
         _settings = settings.Value;
         _logger = logger;
-        _s3Client = new Lazy<IAmazonS3>(() =>
-        {
-            // Validate configuration
-            if (string.IsNullOrWhiteSpace(_settings.EndpointUrl))
-                throw new InvalidOperationException("S3 EndpointUrl is not configured");
-            if (string.IsNullOrWhiteSpace(_settings.AccessKeyId))
-                throw new InvalidOperationException("S3 AccessKeyId is not configured");
-            if (string.IsNullOrWhiteSpace(_settings.SecretAccessKey))
-                throw new InvalidOperationException("S3 SecretAccessKey is not configured");
-            if (string.IsNullOrWhiteSpace(_settings.BucketName))
-                throw new InvalidOperationException("S3 BucketName is not configured");
 
-            // Create S3 config for Railway's S3-compatible storage
-            // Railway Buckets require virtual-hosted-style URLs:
-            // https://bucket-name.storage.railway.app/key
-            // When using a custom endpoint (ServiceURL), we should NOT set RegionEndpoint
-            // as it causes the SDK to try authenticating against AWS instead of the custom endpoint
-            var s3Config = new AmazonS3Config
-            {
-                ServiceURL = _settings.EndpointUrl.TrimEnd('/'), // Remove trailing slash if present
-                ForcePathStyle = false, // Use virtual-hosted-style URLs (Railway requirement)
-                // Don't set RegionEndpoint for custom S3-compatible endpoints
-                // This prevents the SDK from trying to authenticate against AWS
-                UseHttp = false, // Use HTTPS
-                DisableHostPrefixInjection = false, // Allow host prefix for virtual-hosted-style
-            };
+        // Validate configuration
+        if (string.IsNullOrWhiteSpace(_settings.EndpointUrl))
+            throw new InvalidOperationException("S3 EndpointUrl is not configured");
+        if (string.IsNullOrWhiteSpace(_settings.AccessKeyId))
+            throw new InvalidOperationException("S3 AccessKeyId is not configured");
+        if (string.IsNullOrWhiteSpace(_settings.SecretAccessKey))
+            throw new InvalidOperationException("S3 SecretAccessKey is not configured");
+        if (string.IsNullOrWhiteSpace(_settings.BucketName))
+            throw new InvalidOperationException("S3 BucketName is not configured");
 
-            _logger.LogInformation("S3 Client configured: Endpoint={Endpoint}, Bucket={Bucket}, VirtualHostedStyle={VirtualHostedStyle}, AccessKeyId={AccessKeyId}",
-                s3Config.ServiceURL, _settings.BucketName, !s3Config.ForcePathStyle,
-                string.IsNullOrEmpty(_settings.AccessKeyId) ? "NOT SET" : $"{_settings.AccessKeyId.Substring(0, Math.Min(8, _settings.AccessKeyId.Length))}...");
+        _httpClient = httpClientFactory.CreateClient();
+        _httpClient.Timeout = TimeSpan.FromMinutes(5);
 
-            // Create S3 client with credentials
-            var credentials = new Amazon.Runtime.BasicAWSCredentials(
-                _settings.AccessKeyId,
-                _settings.SecretAccessKey);
-
-            return new AmazonS3Client(credentials, s3Config);
-        });
+        _logger.LogInformation("S3 Storage Service configured: Endpoint={Endpoint}, Bucket={Bucket}",
+            _settings.EndpointUrl, _settings.BucketName);
     }
 
     public async Task<string> UploadFileAsync(byte[] fileBytes, string fileName, string contentType)
@@ -67,82 +43,172 @@ public class S3StorageService : IS3StorageService
         {
             _logger.LogInformation("Uploading file to S3: {FileName} to bucket {BucketName}", fileName, _settings.BucketName);
 
-            var client = _s3Client.Value;
+            // Railway uses virtual-hosted-style URLs: https://bucket-name.storage.railway.app/key
+            var baseUrl = _settings.EndpointUrl.TrimEnd('/');
+            var bucketHost = $"{_settings.BucketName}.{baseUrl.Replace("https://", "").Replace("http://", "")}";
+            var url = $"https://{bucketHost}/{Uri.EscapeDataString(fileName)}";
 
-            // Upload the file
-            // Railway doesn't support server-side encryption or storage classes
-            // Don't set these properties at all (setting to null might still add headers)
-            var putRequest = new PutObjectRequest
+            var request = new HttpRequestMessage(HttpMethod.Put, url)
             {
-                BucketName = _settings.BucketName,
-                Key = fileName,
-                InputStream = new MemoryStream(fileBytes),
-                ContentType = contentType
-                // Intentionally not setting ServerSideEncryptionMethod, StorageClass, etc.
-                // to avoid Railway sending "header implies functionality" errors
+                Content = new ByteArrayContent(fileBytes)
             };
 
-            await client.PutObjectAsync(putRequest);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+            request.Content.Headers.ContentLength = fileBytes.Length;
+
+            // Sign the request using AWS Signature Version 4
+            SignRequest(request, "PUT", fileName, fileBytes, contentType);
+
+            var response = await _httpClient.SendAsync(request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError("S3 upload failed: Status={Status}, Response={Response}",
+                    response.StatusCode, errorContent);
+
+                throw new InvalidOperationException(
+                    $"Failed to upload file to S3. Status: {response.StatusCode}, Response: {errorContent}");
+            }
 
             _logger.LogInformation("File uploaded successfully: {FileName}", fileName);
 
             // Generate pre-signed URL (expires in 1 hour)
-            var preSignedUrlRequest = new GetPreSignedUrlRequest
-            {
-                BucketName = _settings.BucketName,
-                Key = fileName,
-                Verb = HttpVerb.GET,
-                Expires = DateTime.UtcNow.AddHours(1)
-            };
-
-            var publicUrl = client.GetPreSignedURL(preSignedUrlRequest);
+            var presignedUrl = GeneratePresignedUrl(fileName, TimeSpan.FromHours(1));
 
             _logger.LogInformation("Generated pre-signed URL for {FileName}, expires in 1 hour", fileName);
 
-            return publicUrl;
+            return presignedUrl;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error uploading file to S3: {FileName}. Endpoint: {Endpoint}, Bucket: {Bucket}",
                 fileName, _settings.EndpointUrl, _settings.BucketName);
-
-            // Provide more context in the error message
-            if (ex.Message.Contains("InvalidAccessKeyId") ||
-                ex.Message.Contains("SignatureDoesNotMatch") ||
-                ex.Message.Contains("does not exist in our records"))
-            {
-                throw new InvalidOperationException(
-                    $"Failed to upload to S3. Invalid credentials or endpoint configuration issue. " +
-                    $"This error usually means: 1) AccessKeyId/SecretAccessKey are incorrect, " +
-                    $"2) The SDK is trying to authenticate against AWS instead of Railway endpoint '{_settings.EndpointUrl}', " +
-                    $"3) Check that your endpoint URL is correct and doesn't include the bucket name. " +
-                    $"Current endpoint: {_settings.EndpointUrl}", ex);
-            }
-
-            if (ex.Message.Contains("NoSuchBucket"))
-            {
-                throw new InvalidOperationException(
-                    $"Bucket '{_settings.BucketName}' does not exist. Check your S3 configuration.", ex);
-            }
-
-            if (ex.Message.Contains("AccessDenied"))
-            {
-                throw new InvalidOperationException(
-                    $"Access denied. Check your S3 credentials and bucket permissions. Bucket: '{_settings.BucketName}'", ex);
-            }
-
-            if (ex.Message.Contains("header you provided implies functionality") ||
-                ex.Message.Contains("functionality that is not implemented"))
-            {
-                throw new InvalidOperationException(
-                    $"Railway doesn't support a feature the AWS SDK is trying to use. " +
-                    $"The SDK may be automatically adding headers for features Railway doesn't support. " +
-                    $"Current configuration: Endpoint={_settings.EndpointUrl}, VirtualHostedStyle=true. " +
-                    $"Check Railway documentation for supported S3 features.", ex);
-            }
-
             throw;
         }
     }
-}
 
+    private void SignRequest(HttpRequestMessage request, string method, string key, byte[]? body, string? contentType)
+    {
+        var now = DateTime.UtcNow;
+        var dateStamp = now.ToString("yyyyMMdd");
+        var timeStamp = now.ToString("yyyyMMddTHHmmssZ");
+        var region = _settings.Region == "auto" ? "us-east-1" : _settings.Region;
+        var service = "s3";
+
+        // Parse the URL to get host
+        var uri = request.RequestUri!;
+        var host = uri.Host;
+
+        // Set required headers
+        request.Headers.Add("Host", host);
+        request.Headers.Add("x-amz-date", timeStamp);
+        if (contentType != null)
+        {
+            request.Content!.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+        }
+
+        // Create canonical request
+        var canonicalHeaders = $"host:{host}\nx-amz-date:{timeStamp}\n";
+        var signedHeaders = "host;x-amz-date";
+        var payloadHash = body != null ? ComputeSha256Hash(body) : ComputeSha256Hash(Array.Empty<byte>());
+
+        var canonicalRequest = $"{method}\n" +
+                              $"/{Uri.EscapeDataString(key)}\n" +
+                              $"\n" + // Query string (empty for PUT)
+                              $"{canonicalHeaders}\n" +
+                              $"{signedHeaders}\n" +
+                              $"{payloadHash}";
+
+        // Create string to sign
+        var algorithm = "AWS4-HMAC-SHA256";
+        var credentialScope = $"{dateStamp}/{region}/{service}/aws4_request";
+        var stringToSign = $"{algorithm}\n{timeStamp}\n{credentialScope}\n{ComputeSha256Hash(Encoding.UTF8.GetBytes(canonicalRequest))}";
+
+        // Calculate signature
+        var kSecret = Encoding.UTF8.GetBytes($"AWS4{_settings.SecretAccessKey}");
+        var kDate = HmacSha256(kSecret, dateStamp);
+        var kRegion = HmacSha256(kDate, region);
+        var kService = HmacSha256(kRegion, service);
+        var kSigning = HmacSha256(kService, "aws4_request");
+        var signature = BitConverter.ToString(HmacSha256(kSigning, stringToSign)).Replace("-", "").ToLowerInvariant();
+
+        // Create authorization header
+        var authHeader = $"{algorithm} Credential={_settings.AccessKeyId}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
+        request.Headers.Add("Authorization", authHeader);
+    }
+
+    private string GeneratePresignedUrl(string key, TimeSpan expiration)
+    {
+        var now = DateTime.UtcNow;
+        var dateStamp = now.ToString("yyyyMMdd");
+        var timeStamp = now.ToString("yyyyMMddTHHmmssZ");
+        var region = _settings.Region == "auto" ? "us-east-1" : _settings.Region;
+        var service = "s3";
+
+        // Railway uses virtual-hosted-style URLs
+        var baseUrl = _settings.EndpointUrl.TrimEnd('/');
+        var bucketHost = $"{_settings.BucketName}.{baseUrl.Replace("https://", "").Replace("http://", "")}";
+        var url = $"https://{bucketHost}/{Uri.EscapeDataString(key)}";
+
+        // Create query parameters for pre-signed URL
+        var queryParams = new Dictionary<string, string>
+        {
+            { "X-Amz-Algorithm", "AWS4-HMAC-SHA256" },
+            { "X-Amz-Credential", $"{_settings.AccessKeyId}/{dateStamp}/{region}/{service}/aws4_request" },
+            { "X-Amz-Date", timeStamp },
+            { "X-Amz-Expires", ((int)expiration.TotalSeconds).ToString() },
+            { "X-Amz-SignedHeaders", "host" }
+        };
+
+        // Build canonical query string
+        var sortedParams = queryParams.OrderBy(p => p.Key).ToList();
+        var queryString = string.Join("&", sortedParams.Select(p => $"{Uri.EscapeDataString(p.Key)}={Uri.EscapeDataString(p.Value)}"));
+
+        // Create canonical request for signing
+        var host = bucketHost;
+        var canonicalHeaders = $"host:{host}\n";
+        var signedHeaders = "host";
+        var payloadHash = "UNSIGNED-PAYLOAD";
+
+        var canonicalRequest = $"GET\n" +
+                              $"/{Uri.EscapeDataString(key)}\n" +
+                              $"{queryString}\n" +
+                              $"{canonicalHeaders}\n" +
+                              $"{signedHeaders}\n" +
+                              $"{payloadHash}";
+
+        // Create string to sign
+        var algorithm = "AWS4-HMAC-SHA256";
+        var credentialScope = $"{dateStamp}/{region}/{service}/aws4_request";
+        var stringToSign = $"{algorithm}\n{timeStamp}\n{credentialScope}\n{ComputeSha256Hash(Encoding.UTF8.GetBytes(canonicalRequest))}";
+
+        // Calculate signature
+        var kSecret = Encoding.UTF8.GetBytes($"AWS4{_settings.SecretAccessKey}");
+        var kDate = HmacSha256(kSecret, dateStamp);
+        var kRegion = HmacSha256(kDate, region);
+        var kService = HmacSha256(kRegion, service);
+        var kSigning = HmacSha256(kService, "aws4_request");
+        var signature = BitConverter.ToString(HmacSha256(kSigning, stringToSign)).Replace("-", "").ToLowerInvariant();
+
+        // Add signature to query string
+        queryParams["X-Amz-Signature"] = signature;
+        sortedParams = queryParams.OrderBy(p => p.Key).ToList();
+        queryString = string.Join("&", sortedParams.Select(p => $"{Uri.EscapeDataString(p.Key)}={Uri.EscapeDataString(p.Value)}"));
+
+        return $"{url}?{queryString}";
+    }
+
+    private static byte[] HmacSha256(byte[] key, string data)
+    {
+        using var hmac = new HMACSHA256(key);
+        return hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
+    }
+
+    private static string ComputeSha256Hash(byte[] data)
+    {
+        using var sha256 = SHA256.Create();
+        var hash = sha256.ComputeHash(data);
+        return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+    }
+}
