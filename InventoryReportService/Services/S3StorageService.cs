@@ -31,22 +31,21 @@ public class S3StorageService : IS3StorageService
                 throw new InvalidOperationException("S3 BucketName is not configured");
 
             // Create S3 config for Railway's S3-compatible storage
-            // Railway Buckets use virtual-hosted-style URLs by default:
-            // https://bucket-name.storage.railway.app/key
+            // Railway Buckets may use either virtual-hosted-style or path-style URLs
+            // Some buckets require path-style URLs - try path-style first
             // When using a custom endpoint (ServiceURL), we should NOT set RegionEndpoint
             // as it causes the SDK to try authenticating against AWS instead of the custom endpoint
             var s3Config = new AmazonS3Config
             {
                 ServiceURL = _settings.EndpointUrl.TrimEnd('/'), // Remove trailing slash if present
-                // ForcePathStyle defaults to false, which means virtual-hosted-style URLs
-                // This is the standard for Railway Buckets (newer buckets)
-                // Older buckets might require path-style - check your bucket's Credentials tab
+                ForcePathStyle = true, // Use path-style URLs: https://storage.railway.app/bucket-name/key
+                // Path-style is more compatible with S3-compatible services
                 // Don't set RegionEndpoint for custom S3-compatible endpoints
                 // This prevents the SDK from trying to authenticate against AWS
             };
 
-            _logger.LogInformation("S3 Client configured: Endpoint={Endpoint}, Bucket={Bucket}, VirtualHostedStyle={VirtualHostedStyle}, AccessKeyId={AccessKeyId}",
-                s3Config.ServiceURL, _settings.BucketName, !s3Config.ForcePathStyle,
+            _logger.LogInformation("S3 Client configured: Endpoint={Endpoint}, Bucket={Bucket}, PathStyle={PathStyle}, AccessKeyId={AccessKeyId}",
+                s3Config.ServiceURL, _settings.BucketName, s3Config.ForcePathStyle,
                 string.IsNullOrEmpty(_settings.AccessKeyId) ? "NOT SET" : $"{_settings.AccessKeyId.Substring(0, Math.Min(8, _settings.AccessKeyId.Length))}...");
 
             // Create S3 client with credentials
@@ -67,12 +66,16 @@ public class S3StorageService : IS3StorageService
             var client = _s3Client.Value;
 
             // Upload the file
+            // Explicitly disable features Railway doesn't support to avoid "header implies functionality" errors
             var putRequest = new PutObjectRequest
             {
                 BucketName = _settings.BucketName,
                 Key = fileName,
                 InputStream = new MemoryStream(fileBytes),
-                ContentType = contentType
+                ContentType = contentType,
+                ServerSideEncryptionMethod = null, // Railway doesn't support server-side encryption
+                ServerSideEncryptionCustomerMethod = null,
+                StorageClass = null // Don't set storage class (Railway uses standard tier)
             };
 
             await client.PutObjectAsync(putRequest);
@@ -122,6 +125,16 @@ public class S3StorageService : IS3StorageService
             {
                 throw new InvalidOperationException(
                     $"Access denied. Check your S3 credentials and bucket permissions. Bucket: '{_settings.BucketName}'", ex);
+            }
+
+            if (ex.Message.Contains("header you provided implies functionality") || 
+                ex.Message.Contains("functionality that is not implemented"))
+            {
+                throw new InvalidOperationException(
+                    $"S3-compatible service doesn't support a feature the SDK is trying to use. " +
+                    $"This usually means Railway doesn't support certain S3 features. " +
+                    $"Try checking your bucket's Credentials tab in Railway to see if it requires path-style URLs. " +
+                    $"Current configuration: Endpoint={_settings.EndpointUrl}, PathStyle=true", ex);
             }
 
             throw;
