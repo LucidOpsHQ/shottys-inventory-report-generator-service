@@ -2,6 +2,7 @@ using Amazon.S3;
 using Amazon.S3.Model;
 using InventoryReportService.Models;
 using Microsoft.Extensions.Options;
+using System.Net.Http;
 
 namespace InventoryReportService.Services;
 
@@ -10,6 +11,7 @@ public class S3StorageService : IS3StorageService
     private readonly S3Settings _settings;
     private readonly ILogger<S3StorageService> _logger;
     private readonly Lazy<IAmazonS3> _s3Client;
+    private static readonly HttpClient _httpClient = new HttpClient();
 
     public S3StorageService(
         IOptions<S3Settings> settings,
@@ -80,10 +82,12 @@ public class S3StorageService : IS3StorageService
             _logger.LogInformation("File uploaded successfully: {FileName}, RequestId={RequestId}",
                 fileName, response.ResponseMetadata.RequestId);
 
-            // Wait for eventual consistency - verify file exists before generating pre-signed URL
-            // Railway's S3-compatible storage may have a small delay before file is available
-            var maxRetries = 5;
-            var retryDelay = TimeSpan.FromMilliseconds(500);
+            // Wait for eventual consistency - Railway's S3-compatible storage has a delay before file is available
+            // Add initial delay after upload, then verify with exponential backoff
+            await Task.Delay(TimeSpan.FromMilliseconds(1000)); // Initial 1 second delay
+
+            var maxRetries = 10;
+            var baseDelay = TimeSpan.FromMilliseconds(500);
 
             for (int i = 0; i < maxRetries; i++)
             {
@@ -103,9 +107,11 @@ public class S3StorageService : IS3StorageService
                 {
                     if (i < maxRetries - 1)
                     {
-                        _logger.LogDebug("File not yet available, retrying in {Delay}ms: {FileName} (attempt {Attempt})",
-                            retryDelay.TotalMilliseconds, fileName, i + 1);
-                        await Task.Delay(retryDelay);
+                        // Exponential backoff: 500ms, 1000ms, 2000ms, etc. (capped at 2 seconds)
+                        var delay = TimeSpan.FromMilliseconds(Math.Min(baseDelay.TotalMilliseconds * Math.Pow(2, i), 2000));
+                        _logger.LogDebug("File not yet available, retrying in {Delay}ms: {FileName} (attempt {Attempt}/{MaxRetries})",
+                            delay.TotalMilliseconds, fileName, i + 1, maxRetries);
+                        await Task.Delay(delay);
                     }
                     else
                     {
@@ -114,6 +120,9 @@ public class S3StorageService : IS3StorageService
                     }
                 }
             }
+
+            // Additional small delay after verification to ensure file is fully available
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
 
             // Generate pre-signed URL (expires in 1 hour)
             var presignedRequest = new GetPreSignedUrlRequest
@@ -126,7 +135,63 @@ public class S3StorageService : IS3StorageService
 
             var presignedUrl = client.GetPreSignedURL(presignedRequest);
 
-            _logger.LogInformation("Generated pre-signed URL for {FileName}, expires in 1 hour", fileName);
+            // Verify the pre-signed URL actually works by making a HEAD request
+            // This ensures the file is fully available before returning the URL
+            var maxUrlRetries = 10;
+            var baseUrlDelay = TimeSpan.FromMilliseconds(500);
+            var urlVerified = false;
+
+            for (int i = 0; i < maxUrlRetries; i++)
+            {
+                try
+                {
+                    using var headRequest = new HttpRequestMessage(HttpMethod.Head, presignedUrl);
+                    var headResponse = await _httpClient.SendAsync(headRequest, HttpCompletionOption.ResponseHeadersRead);
+
+                    if (headResponse.IsSuccessStatusCode)
+                    {
+                        _logger.LogInformation("Pre-signed URL verified successfully: {FileName} (attempt {Attempt})", fileName, i + 1);
+                        urlVerified = true;
+                        break;
+                    }
+                    else if (headResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        throw new HttpRequestException($"File not found via pre-signed URL (Status: {headResponse.StatusCode})");
+                    }
+                }
+                catch (HttpRequestException ex) when (ex.Message.Contains("404") || ex.Message.Contains("NotFound") || ex.Message.Contains("NoSuchKey"))
+                {
+                    if (i < maxUrlRetries - 1)
+                    {
+                        // Exponential backoff: 500ms, 1000ms, 2000ms, etc. (capped at 2 seconds)
+                        var delay = TimeSpan.FromMilliseconds(Math.Min(baseUrlDelay.TotalMilliseconds * Math.Pow(2, i), 2000));
+                        _logger.LogDebug("Pre-signed URL not yet accessible, retrying in {Delay}ms: {FileName} (attempt {Attempt}/{MaxRetries})",
+                            delay.TotalMilliseconds, fileName, i + 1, maxUrlRetries);
+                        await Task.Delay(delay);
+
+                        // Regenerate the pre-signed URL in case it expired or needs refresh
+                        presignedUrl = client.GetPreSignedURL(presignedRequest);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Pre-signed URL not accessible after {MaxRetries} attempts: {FileName}. Returning URL anyway - it should be available shortly.",
+                            maxUrlRetries, fileName);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error verifying pre-signed URL (attempt {Attempt}): {FileName}. Continuing anyway.", i + 1, fileName);
+                    if (i < maxUrlRetries - 1)
+                    {
+                        var delay = TimeSpan.FromMilliseconds(Math.Min(baseUrlDelay.TotalMilliseconds * Math.Pow(2, i), 2000));
+                        await Task.Delay(delay);
+                        presignedUrl = client.GetPreSignedURL(presignedRequest);
+                    }
+                }
+            }
+
+            _logger.LogInformation("Generated pre-signed URL for {FileName}, expires in 1 hour, verified={Verified}",
+                fileName, urlVerified);
 
             return presignedUrl;
         }
